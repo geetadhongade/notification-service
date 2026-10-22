@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.nio.charset.StandardCharsets;
@@ -23,14 +24,20 @@ public class OrderEventListener {
 
     private final JsonMapper jsonMapper;
     private final SmsSender smsSender;
+    private final ProcessedEventRepository processedEventRepository;
 
-    public OrderEventListener(JsonMapper jsonMapper, SmsSender smsSender) {
+    public OrderEventListener(JsonMapper jsonMapper, SmsSender smsSender,
+                              ProcessedEventRepository processedEventRepository) {
         this.jsonMapper = jsonMapper;
         this.smsSender = smsSender;
+        this.processedEventRepository = processedEventRepository;
     }
 
-    // Called by Spring Kafka once for every message on the topic
+    // Called by Spring Kafka once for every message on the topic.
+    // @Transactional: the "already handled" row is only kept if the SMS was sent;
+    // if sending fails, the row is rolled back so a retry tries the SMS again.
     @KafkaListener(topics = "${notification.kafka.topic.order-events}")
+    @Transactional
     public void onOrderEvent(ConsumerRecord<String, String> record) {
         // Request ID of the original POST /api/orders call in shop-api, so one order can be traced across both apps
         String requestId = headerValue(record, "reqId");
@@ -50,6 +57,13 @@ public class OrderEventListener {
             }
 
             OrderPlacedEvent event = jsonMapper.readValue(record.value(), OrderPlacedEvent.class);
+
+            // Already handled before (Kafka delivered it again): don't send a second SMS
+            if (!processedEventRepository.markProcessed(event.eventId(), event.eventType(), event.orderId())) {
+                log.info("Skipping duplicate event {} for order {}: already handled", event.eventId(), event.orderId());
+                return;
+            }
+
             smsSender.send(event.customerPhone(), buildOrderPlacedText(event));
         } finally {
             MDC.remove(MDC_KEY);
