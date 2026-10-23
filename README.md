@@ -35,6 +35,11 @@ Each Kafka message carries these headers:
 
 The message key is the order ID, so all events for one order stay in order.
 
+`order-events` has 3 partitions, and the listener starts 3 consumers
+(`@KafkaListener(..., concurrency = "3")` in `OrderEventListener`), one per partition, so
+the partitions are read at the same time. Running more copies of the service adds more
+consumers to the same group, but at most 3 can work at once; the rest wait as spares.
+
 ### Duplicates: at most one SMS per event
 
 Kafka can deliver the same message more than once (for example after a crash or a
@@ -108,7 +113,8 @@ cd ../notification-service
 ./mvnw spring-boot:run
 ```
 
-The database connection is in `application.properties`
+With no profile chosen, the service uses the `dev` profile (your own machine). The database
+connection is in `application-dev.properties`
 (`spring.datasource.url=jdbc:postgresql://localhost:5432/notification`); change the
 username/password there if yours differ. The dead-letter topic is created when the
 service starts.
@@ -135,18 +141,49 @@ docker exec shop-api-kafka-1 /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap
 
 ## Configuration
 
-Settings live in `src/main/resources/application.properties`:
+### Environments (profiles)
+
+Settings shared by every environment are in `src/main/resources/application.properties`.
+What differs per environment is in one extra file per profile, read on top of it:
+
+| Profile | File | Database and Kafka come from |
+|---|---|---|
+| `dev` (used when no profile is chosen) | `application-dev.properties` | The file itself (`localhost`) |
+| `staging` | `application-staging.properties` | Environment variables |
+| `prod` | `application-prod.properties` | Environment variables |
+
+Choose a profile when starting the service:
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.profiles=staging   # with Maven
+java -jar notification-service.jar --spring.profiles.active=prod
+SPRING_PROFILES_ACTIVE=prod                                 # or as an environment variable
+```
+
+`staging` and `prod` need these environment variables. If one is missing, the service
+fails to start. No real address or password is ever stored in this repository.
+
+| Variable | Example |
+|---|---|
+| `DB_HOST` | `notification-db.internal` |
+| `DB_PORT` | `5432` |
+| `DB_NAME` | `notification` |
+| `DB_USERNAME` | `notification` |
+| `DB_PASSWORD` | (secret) |
+| `KAFKA_BOOTSTRAP_SERVERS` | `kafka-1:9092,kafka-2:9092,kafka-3:9092` |
+
+### Settings
 
 | Property | Default | Meaning |
 |---|---|---|
-| `spring.kafka.bootstrap-servers` | `localhost:9092` | Where Kafka runs (`kafka:29092` from inside Docker) |
+| `spring.kafka.bootstrap-servers` | `localhost:9092` (dev) | Where Kafka runs (`kafka:29092` from inside Docker) |
 | `spring.kafka.consumer.group-id` | `notification-service` | All copies of this service share one group, so each message is handled once |
 | `notification.kafka.topic.order-events` | `order-events` | Topic to listen to |
 | `notification.kafka.topic.order-events-dlt` | `order-events.DLT` | Dead-letter topic |
 | `notification.kafka.topic.order-events-partitions` | `3` | Partitions of the DLT; must match `order-events` |
 | `notification.kafka.retry.interval-ms` | `2000` | Wait between tries |
 | `notification.kafka.retry.max-retries` | `3` | Retries after the first try |
-| `spring.datasource.url` | `jdbc:postgresql://localhost:5432/notification` | This service's own database |
+| `spring.datasource.url` | `jdbc:postgresql://localhost:5432/notification` (dev) | This service's own database |
 | `notification.sms.fake-failure` | `false` | Testing only: make every SMS fail |
 
 ## Logs
@@ -182,7 +219,10 @@ src/main/java/com/example/notification
     └── LoggingSmsSender.java             # fake sender: writes the SMS to the log
 
 src/main/resources
-├── application.properties
+├── application.properties                # settings shared by every environment
+├── application-dev.properties            # your machine (localhost database and Kafka)
+├── application-staging.properties        # staging: database and Kafka from environment variables
+├── application-prod.properties           # production: same, from environment variables
 └── db/migration
     └── V1__create_processed_event_table.sql
 ```

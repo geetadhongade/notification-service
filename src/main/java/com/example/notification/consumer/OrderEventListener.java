@@ -36,7 +36,9 @@ public class OrderEventListener {
     // Called by Spring Kafka once for every message on the topic.
     // @Transactional: the "already handled" row is only kept if the SMS was sent;
     // if sending fails, the row is rolled back so a retry tries the SMS again.
-    @KafkaListener(topics = "${notification.kafka.topic.order-events}")
+    // concurrency = 3: this app starts 3 consumers (one thread each), one per partition of order-events.
+    // More than the number of partitions would be idle.
+    @KafkaListener(topics = "${notification.kafka.topic.order-events}", concurrency = "3")
     @Transactional
     public void onOrderEvent(ConsumerRecord<String, String> record) {
         // Request ID of the original POST /api/orders call in shop-api, so one order can be traced across both apps
